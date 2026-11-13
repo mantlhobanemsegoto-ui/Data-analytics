@@ -1,0 +1,526 @@
+
+-- SIZWE COFFEE SQL ASSIGNMENT
+
+
+
+
+-- TASK 1: CHANNEL PERFORMANCE
+
+
+WITH channel_revenue AS
+(
+    SELECT
+        so.channel,
+
+        SUM(
+            CASE
+                WHEN so.order_date BETWEEN DATE '2023-07-01'
+                                       AND DATE '2024-06-30'
+                THEN sl.line_revenue
+                ELSE 0
+            END
+        ) AS fy2024_revenue,
+
+        SUM(
+            CASE
+                WHEN so.order_date BETWEEN DATE '2024-07-01'
+                                       AND DATE '2025-06-30'
+                THEN sl.line_revenue
+                ELSE 0
+            END
+        ) AS fy2025_revenue
+
+    FROM sizwe_sales_orders AS so
+
+    INNER JOIN sizwe_sales_lines AS sl
+        ON sl.order_id = so.order_id
+
+    GROUP BY
+        so.channel
+)
+
+SELECT
+    channel,
+
+    ROUND(
+        fy2024_revenue,
+        2
+    ) AS fy2024_revenue,
+
+    ROUND(
+        fy2025_revenue,
+        2
+    ) AS fy2025_revenue,
+
+    ROUND(
+        (
+            fy2025_revenue - fy2024_revenue
+        )
+        / NULLIF(fy2024_revenue, 0)
+        * 100,
+        2
+    ) AS growth_pct
+
+FROM channel_revenue
+
+ORDER BY
+    channel;
+
+
+
+
+-- TASK 2: PRODUCT-LINE PROFITABILITY
+
+
+SELECT
+    p.product_line,
+
+    ROUND(
+        SUM(sl.line_revenue),
+        2
+    ) AS revenue,
+
+    ROUND(
+        SUM(sl.cogs),
+        2
+    ) AS cost_of_goods,
+
+    ROUND(
+        SUM(sl.line_revenue - sl.cogs),
+        2
+    ) AS gross_profit,
+
+    ROUND(
+        100.0
+        * SUM(sl.line_revenue - sl.cogs)
+        / NULLIF(SUM(sl.line_revenue), 0),
+        2
+    ) AS gross_margin_pct
+
+FROM sizwe_sales_lines AS sl
+
+INNER JOIN sizwe_products AS p
+    ON p.sku = sl.sku
+
+GROUP BY
+    p.product_line
+
+ORDER BY
+    gross_profit DESC;
+
+
+
+
+-- TASK 3: COLLECTIONS ANALYSIS
+
+
+SELECT
+    c.channel,
+
+    COUNT(*) AS invoice_count,
+
+    SUM(
+        CASE
+            WHEN ar.amount_settled >= ar.invoice_amount
+            THEN 1
+            ELSE 0
+        END
+    ) AS settled_count,
+
+    SUM(
+        CASE
+            WHEN ar.amount_settled < ar.invoice_amount
+            THEN 1
+            ELSE 0
+        END
+    ) AS open_count,
+
+    ROUND(
+        AVG(
+            CASE
+                WHEN ar.amount_settled >= ar.invoice_amount
+                THEN DATEDIFF(
+                    ar.settlement_date,
+                    ar.invoice_date
+                )
+            END
+        ),
+        2
+    ) AS avg_days_to_settle,
+
+    ROUND(
+        SUM(
+            GREATEST(
+                ar.invoice_amount - ar.amount_settled,
+                0
+            )
+        ),
+        2
+    ) AS total_outstanding
+
+FROM sizwe_ar_ledger AS ar
+
+INNER JOIN sizwe_customers AS c
+    ON c.customer_id = ar.customer_id
+
+GROUP BY
+    c.channel
+
+ORDER BY
+    c.channel;
+
+
+
+
+-- TASK 4: TOP 10 FY2025 CUSTOMER ACCOUNTS
+
+
+SELECT
+    c.trading_name,
+    c.segment,
+    c.province,
+
+    COALESCE(
+        r.rep_name,
+        'Unassigned'
+    ) AS sales_representative,
+
+    ROUND(
+        SUM(sl.line_revenue),
+        2
+    ) AS fy2025_revenue
+
+FROM sizwe_sales_orders AS so
+
+INNER JOIN sizwe_sales_lines AS sl
+    ON sl.order_id = so.order_id
+
+INNER JOIN sizwe_customers AS c
+    ON c.customer_id = so.customer_id
+
+LEFT JOIN sizwe_reps AS r
+    ON r.rep_id = c.rep_id
+
+WHERE so.order_date BETWEEN DATE '2024-07-01'
+                        AND DATE '2025-06-30'
+
+GROUP BY
+    c.customer_id,
+    c.trading_name,
+    c.segment,
+    c.province,
+    r.rep_name
+
+ORDER BY
+    fy2025_revenue DESC
+
+LIMIT 10;
+
+
+
+
+-- TASK 5: WHOLESALE CUSTOMERS WITHOUT PROMOTIONS
+
+WITH wholesale_revenue AS
+(
+    SELECT
+        so.customer_id,
+        SUM(sl.line_revenue) AS revenue
+
+    FROM sizwe_sales_orders AS so
+
+    INNER JOIN sizwe_sales_lines AS sl
+        ON sl.order_id = so.order_id
+
+    WHERE so.channel = 'Wholesale'
+
+    GROUP BY so.customer_id
+)
+
+SELECT
+    c.trading_name,
+    c.segment,
+    c.province,
+    ROUND(wr.revenue, 2) AS revenue
+
+FROM wholesale_revenue AS wr
+
+INNER JOIN sizwe_customers AS c
+    ON c.customer_id = wr.customer_id
+
+ORDER BY wr.revenue DESC
+
+LIMIT 15;
+
+-- TASK 6: SALES REPRESENTATIVES AGAINST TARGET
+
+
+WITH rep_revenue AS
+(
+    SELECT
+        so.rep_id,
+        SUM(sl.line_revenue) AS fy2025_revenue
+
+    FROM sizwe_sales_orders AS so
+
+    INNER JOIN sizwe_sales_lines AS sl
+        ON sl.order_id = so.order_id
+
+    WHERE so.order_date BETWEEN DATE '2024-07-01'
+                            AND DATE '2025-06-30'
+
+    GROUP BY
+        so.rep_id
+)
+
+SELECT
+    r.rep_name,
+    r.territory,
+    r.target_monthly,
+
+    ROUND(
+        COALESCE(rr.fy2025_revenue, 0) / 12.0,
+        2
+    ) AS actual_fy2025_monthly_average,
+
+    ROUND(
+        100.0
+        * (COALESCE(rr.fy2025_revenue, 0) / 12.0)
+        / NULLIF(r.target_monthly, 0),
+        2
+    ) AS pct_of_target,
+
+    CASE
+        WHEN COALESCE(rr.fy2025_revenue, 0) / 12.0
+             >= r.target_monthly
+        THEN 'Target achieved'
+        ELSE 'Below target'
+    END AS target_status
+
+FROM sizwe_reps AS r
+
+LEFT JOIN rep_revenue AS rr
+    ON rr.rep_id = r.rep_id
+
+ORDER BY
+    pct_of_target DESC,
+    r.rep_name;
+
+-- TASK 7: MONTHLY REVENUE TREND
+
+
+WITH monthly AS
+(
+    SELECT
+        CAST(
+            DATE_TRUNC(
+                'MONTH',
+                so.order_date
+            ) AS DATE
+        ) AS revenue_month,
+
+        SUM(sl.line_revenue) AS monthly_revenue
+
+    FROM sizwe_sales_orders AS so
+
+    INNER JOIN sizwe_sales_lines AS sl
+        ON sl.order_id = so.order_id
+
+    WHERE so.order_date BETWEEN DATE '2023-07-01'
+                            AND DATE '2025-06-30'
+
+    GROUP BY
+        CAST(
+            DATE_TRUNC(
+                'MONTH',
+                so.order_date
+            ) AS DATE
+        )
+),
+
+monthly_with_previous AS
+(
+    SELECT
+        revenue_month,
+        monthly_revenue,
+
+        LAG(monthly_revenue) OVER
+        (
+            ORDER BY revenue_month
+        ) AS previous_month_revenue
+
+    FROM monthly
+)
+
+SELECT
+    revenue_month,
+
+    ROUND(
+        monthly_revenue,
+        2
+    ) AS monthly_revenue,
+
+    ROUND(
+        100.0
+        * (
+            monthly_revenue
+            / NULLIF(previous_month_revenue, 0)
+            - 1
+        ),
+        2
+    ) AS change_from_previous_month_pct,
+
+    ROUND(
+        AVG(monthly_revenue) OVER
+        (
+            ORDER BY revenue_month
+            ROWS BETWEEN 2 PRECEDING
+                     AND CURRENT ROW
+        ),
+        2
+    ) AS rolling_three_month_average
+
+FROM monthly_with_previous
+
+ORDER BY
+    revenue_month;
+
+
+
+-- TASK 8: PRODUCT MIX AND GROSS-MARGIN MOVEMENT
+
+
+WITH line_year AS
+(
+    SELECT
+        p.product_line,
+
+        CASE
+            WHEN so.order_date BETWEEN DATE '2023-07-01'
+                                   AND DATE '2024-06-30'
+            THEN 'FY2024'
+
+            WHEN so.order_date BETWEEN DATE '2024-07-01'
+                                   AND DATE '2025-06-30'
+            THEN 'FY2025'
+        END AS financial_year,
+
+        SUM(sl.line_revenue) AS revenue,
+        SUM(sl.cogs) AS cogs
+
+    FROM sizwe_sales_orders AS so
+
+    INNER JOIN sizwe_sales_lines AS sl
+        ON sl.order_id = so.order_id
+
+    INNER JOIN sizwe_products AS p
+        ON p.sku = sl.sku
+
+    WHERE so.order_date BETWEEN DATE '2023-07-01'
+                            AND DATE '2025-06-30'
+
+    GROUP BY
+        p.product_line,
+
+        CASE
+            WHEN so.order_date BETWEEN DATE '2023-07-01'
+                                   AND DATE '2024-06-30'
+            THEN 'FY2024'
+
+            WHEN so.order_date BETWEEN DATE '2024-07-01'
+                                   AND DATE '2025-06-30'
+            THEN 'FY2025'
+        END
+),
+
+metrics AS
+(
+    SELECT
+        product_line,
+        financial_year,
+        revenue,
+
+        100.0
+        * (revenue - cogs)
+        / NULLIF(revenue, 0) AS gross_margin_pct,
+
+        100.0
+        * revenue
+        / SUM(revenue) OVER
+        (
+            PARTITION BY financial_year
+        ) AS revenue_share_pct
+
+    FROM line_year
+)
+
+SELECT
+    product_line,
+
+    ROUND(
+        MAX(
+            CASE
+                WHEN financial_year = 'FY2024'
+                THEN revenue
+            END
+        ),
+        2
+    ) AS fy2024_revenue,
+
+    ROUND(
+        MAX(
+            CASE
+                WHEN financial_year = 'FY2024'
+                THEN gross_margin_pct
+            END
+        ),
+        2
+    ) AS fy2024_margin_pct,
+
+    ROUND(
+        MAX(
+            CASE
+                WHEN financial_year = 'FY2024'
+                THEN revenue_share_pct
+            END
+        ),
+        2
+    ) AS fy2024_revenue_share_pct,
+
+    ROUND(
+        MAX(
+            CASE
+                WHEN financial_year = 'FY2025'
+                THEN revenue
+            END
+        ),
+        2
+    ) AS fy2025_revenue,
+
+    ROUND(
+        MAX(
+            CASE
+                WHEN financial_year = 'FY2025'
+                THEN gross_margin_pct
+            END
+        ),
+        2
+    ) AS fy2025_margin_pct,
+
+    ROUND(
+        MAX(
+            CASE
+                WHEN financial_year = 'FY2025'
+                THEN revenue_share_pct
+            END
+        ),
+        2
+    ) AS fy2025_revenue_share_pct
+
+FROM metrics
+
+GROUP BY
+    product_line
+
+ORDER BY
+    fy2025_revenue DESC;
